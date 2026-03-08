@@ -1,421 +1,391 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import "./App.css";
 
 const API = "http://localhost:3001/api";
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
 function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return "0 B";
-  const k = 1024;
+  if (!bytes || isNaN(bytes)) return "—";
   const sizes = ["B", "KB", "MB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+  const i = Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
 }
 
-function generateSampleJSON(size = "medium") {
-  const items = size === "small" ? 50 : size === "medium" ? 500 : 2000;
-  return {
-    metadata: { generated: new Date().toISOString(), source: "simulated-geojson", size },
-    features: Array.from({ length: items }, (_, i) => ({
-      type: "Feature",
-      id: i + 1,
-      geometry: {
-        type: "Polygon",
-        coordinates: [
-          Array.from({ length: 12 }, () => [
-            +(Math.random() * 20 - 70).toFixed(14),
-            +(Math.random() * 20 - 40).toFixed(14),
-          ]),
-        ],
-      },
-      properties: {
-        provincia: `Provincia ${Math.ceil(Math.random() * 24)}`,
-        departamento: `Departamento ${i + 1}`,
-        resultados: {
-          color: `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")}`,
-          votosPorcentaje: +(Math.random() * 100).toFixed(2),
-          partidos: Array.from({ length: 3 }, (_, j) => ({
-            nombre: `Partido ${j + 1}`,
-            color: `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0")}`,
-            resultados: { votosPorcentaje: +(Math.random() * 60).toFixed(2) },
-            candidato: { nombre: `Candidato ${i}-${j}` },
-          })),
-        },
-      },
-    })),
-  };
-}
-
-// ─── Sub-components ────────────────────────────────────────────────────────
-
-function StatCard({ label, value, accent }) {
+function CompareBar({ labelA, valueA, labelB, valueB }) {
+  if (!valueA || !valueB) return null;
+  const total = Math.max(valueA, valueB);
+  const pctA = ((valueA / total) * 100).toFixed(1);
+  const pctB = ((valueB / total) * 100).toFixed(1);
   return (
-    <div className={`stat-card ${accent ? "accent" : ""}`}>
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">{value}</span>
-    </div>
-  );
-}
-
-function BucketFile({ file, onDownload, onDelete, downloading }) {
-  const pct = parseFloat(file.reduction);
-  return (
-    <div className="bucket-file">
-      <div className="file-header">
-        <span className="file-name">📄 {file.filename}</span>
-        <span className="file-date">{new Date(file.uploadedAt).toLocaleTimeString()}</span>
-      </div>
-      <div className="file-bar-wrap">
-        <div className="file-bar">
-          <div className="bar-original" style={{ width: "100%" }}>
-            <span>{file.originalFormatted}</span>
-          </div>
+    <div className="compare-bar">
+      <div className="compare-bar__row">
+        <span className="compare-bar__label">{labelA}</span>
+        <div className="compare-bar__track">
+          <div className="compare-bar__fill compare-bar__fill--red" style={{ width: `${pctA}%` }} />
         </div>
-        <div className="file-bar">
-          <div className="bar-compressed" style={{ width: `${100 - pct}%` }}>
-            <span>{file.compressedFormatted}</span>
-          </div>
-        </div>
-        <span className="reduction-badge">-{file.reduction}</span>
+        <span className="compare-bar__val compare-bar__val--red">{formatBytes(valueA)}</span>
       </div>
-      <div className="file-actions">
-        <button
-          className="btn btn-download"
-          onClick={() => onDownload(file.filename)}
-          disabled={downloading === file.filename}
-        >
-          {downloading === file.filename ? "⏳ Descargando..." : "⬇ Descargar"}
-        </button>
-        <button className="btn btn-delete" onClick={() => onDelete(file.filename)}>
-          🗑 Eliminar
-        </button>
+      <div className="compare-bar__row">
+        <span className="compare-bar__label">{labelB}</span>
+        <div className="compare-bar__track">
+          <div className="compare-bar__fill compare-bar__fill--green" style={{ width: `${pctB}%` }} />
+        </div>
+        <span className="compare-bar__val compare-bar__val--green">{formatBytes(valueB)}</span>
       </div>
     </div>
   );
 }
 
-// ─── Main App ──────────────────────────────────────────────────────────────
+function TimingBar({ labelA, msA, labelB, msB }) {
+  if (!msA || !msB) return null;
+  const total = Math.max(msA, msB);
+  const pctA = ((msA / total) * 100).toFixed(1);
+  const pctB = ((msB / total) * 100).toFixed(1);
+  return (
+    <div className="compare-bar">
+      <div className="compare-bar__row">
+        <span className="compare-bar__label">{labelA}</span>
+        <div className="compare-bar__track">
+          <div className="compare-bar__fill compare-bar__fill--red" style={{ width: `${pctA}%` }} />
+        </div>
+        <span className="compare-bar__val compare-bar__val--red">{msA}ms</span>
+      </div>
+      <div className="compare-bar__row">
+        <span className="compare-bar__label">{labelB}</span>
+        <div className="compare-bar__track">
+          <div className="compare-bar__fill compare-bar__fill--green" style={{ width: `${pctB}%` }} />
+        </div>
+        <span className="compare-bar__val compare-bar__val--green">{msB}ms</span>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
-  const [tab, setTab] = useState("upload");
-  const [filename, setFilename] = useState("mapa-electoral-2025.json");
-  const [jsonSize, setJsonSize] = useState("medium");
-  const [customJson, setCustomJson] = useState("");
-  const [useCustom, setUseCustom] = useState(false);
-
-  const [uploadResult, setUploadResult] = useState(null);
-  const [uploadLoading, setUploadLoading] = useState(false);
-  const [uploadError, setUploadError] = useState(null);
-
-  const [bucketFiles, setBucketFiles] = useState([]);
-  const [bucketLoading, setBucketLoading] = useState(false);
-
-  const [downloadedData, setDownloadedData] = useState(null);
-  const [downloadingFile, setDownloadingFile] = useState(null);
-  const [downloadTime, setDownloadTime] = useState(null);
-
+  const [distritos, setDistritos] = useState(150);
   const [log, setLog] = useState([]);
 
-  const addLog = useCallback((msg, type = "info") => {
-    const time = new Date().toLocaleTimeString();
-    setLog((prev) => [{ msg, type, time }, ...prev].slice(0, 20));
-  }, []);
+  const [guardando, setGuardando]       = useState(false);
+  const [statsGuardado, setStatsGuardado] = useState(null);
 
-  // Upload
-  const handleUpload = async () => {
-    setUploadLoading(true);
-    setUploadError(null);
-    setUploadResult(null);
+  const [cargandoGzip, setCargandoGzip]   = useState(false);
+  const [resultadoGzip, setResultadoGzip] = useState(null);
 
+  const [cargandoPlano, setCargandoPlano]   = useState(false);
+  const [resultadoPlano, setResultadoPlano] = useState(null);
+
+  const [benchmark, setBenchmark]             = useState(null);
+  const [cargandoBenchmark, setCargandoBenchmark] = useState(false);
+
+  const addLog = (msg, tipo = "info") =>
+    setLog((prev) => [{ msg, tipo, t: new Date().toLocaleTimeString() }, ...prev].slice(0, 20));
+
+  // ── Paso 1: guardar en GCS ─────────────────────────────────
+  const handleGuardar = async () => {
+    setGuardando(true);
+    setStatsGuardado(null);
+    setResultadoGzip(null);
+    setResultadoPlano(null);
+    setBenchmark(null);
+    addLog(`Guardando ${distritos} distritos en GCS comprimido...`);
     try {
-      let data;
-      if (useCustom) {
-        data = JSON.parse(customJson);
-      } else {
-        data = generateSampleJSON(jsonSize);
-      }
-
-      addLog(`Subiendo "${filename}" (${jsonSize})...`, "info");
-      const t0 = performance.now();
-
-      const res = await fetch(`${API}/upload`, {
+      const res = await fetch(`${API}/elecciones/guardar`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename, data }),
+        body: JSON.stringify({ distritos }),
       });
-
-      const result = await res.json();
-      const elapsed = (performance.now() - t0).toFixed(0);
-
-      if (!res.ok) throw new Error(result.error);
-
-      setUploadResult(result);
-      addLog(
-        `✅ Subido en ${elapsed}ms | ${result.stats.originalFormatted} → ${result.stats.compressedFormatted} (${result.stats.reduction})`,
-        "success"
-      );
-    } catch (err) {
-      setUploadError(err.message);
-      addLog(`❌ Error: ${err.message}`, "error");
-    } finally {
-      setUploadLoading(false);
-    }
-  };
-
-  // Load bucket list
-  const loadBucket = async () => {
-    setBucketLoading(true);
-    try {
-      const res = await fetch(`${API}/bucket`);
       const data = await res.json();
-      setBucketFiles(data.files);
-      addLog(`📦 Bucket: ${data.files.length} archivo(s)`, "info");
+      if (!res.ok) throw new Error(data.error);
+      setStatsGuardado(data.stats);
+      addLog(`✅ Guardado: ${data.stats.originalFormateado} → ${data.stats.comprimidoFormateado} (${data.stats.reduccion} menos)`, "success");
     } catch (err) {
-      addLog(`❌ Error cargando bucket: ${err.message}`, "error");
+      addLog(`❌ ${err.message}`, "error");
     } finally {
-      setBucketLoading(false);
+      setGuardando(false);
     }
   };
 
-  // Download
-  const handleDownload = async (fname) => {
-    setDownloadingFile(fname);
-    setDownloadedData(null);
+  // ── Paso 2a: cargar con gzip ───────────────────────────────
+  const handleCargarGzip = async () => {
+    setCargandoGzip(true);
+    setResultadoGzip(null);
+    addLog("Cargando con gzip...");
     const t0 = performance.now();
     try {
-      addLog(`⬇ Descargando "${fname}" (gzip)...`, "info");
-      const res = await fetch(`${API}/download/${encodeURIComponent(fname)}`);
-      const json = await res.json();
-      const elapsed = (performance.now() - t0).toFixed(0);
-      const compressedSize = res.headers.get("X-Compressed-Size");
-      const originalSize = res.headers.get("X-Original-Size");
-      setDownloadedData(json);
-      setDownloadTime(elapsed);
-      addLog(
-        `✅ Descargado en ${elapsed}ms | Wire: ${formatBytes(+compressedSize)} → Parseado: ${formatBytes(+originalSize)}`,
-        "success"
-      );
+      const res = await fetch(`${API}/elecciones/resultados-2025.json`);
+      if (!res.ok) throw new Error("Archivo no encontrado — guardalo primero");
+      await res.json();
+      const ms = Math.round(performance.now() - t0);
+      const bytes = +res.headers.get("X-Compressed-Size");
+      setResultadoGzip({ ms, bytes });
+      addLog(`✅ Gzip: ${formatBytes(bytes)} en ${ms}ms`, "success");
     } catch (err) {
-      addLog(`❌ Error: ${err.message}`, "error");
+      addLog(`❌ ${err.message}`, "error");
     } finally {
-      setDownloadingFile(null);
+      setCargandoGzip(false);
     }
   };
 
-  // Delete
-  const handleDelete = async (fname) => {
+  // ── Paso 2b: cargar JSON plano ─────────────────────────────
+  const handleCargarPlano = async () => {
+    setCargandoPlano(true);
+    setResultadoPlano(null);
+    addLog("Cargando JSON plano (sin compresión)...");
+    const t0 = performance.now();
     try {
-      await fetch(`${API}/bucket/${encodeURIComponent(fname)}`, { method: "DELETE" });
-      addLog(`🗑 "${fname}" eliminado del bucket`, "info");
-      loadBucket();
+      // Accept-Encoding: identity → el servidor descomprime y manda JSON plano
+      const res = await fetch(`${API}/elecciones/resultados-2025.json`, {
+        headers: { "Accept-Encoding": "identity" },
+      });
+      if (!res.ok) throw new Error("Archivo no encontrado — guardalo primero");
+      const data = await res.json();
+      const ms = Math.round(performance.now() - t0);
+      const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+      setResultadoPlano({ ms, bytes });
+      addLog(`✅ JSON plano: ${formatBytes(bytes)} en ${ms}ms`, "success");
     } catch (err) {
-      addLog(`❌ Error: ${err.message}`, "error");
+      addLog(`❌ ${err.message}`, "error");
+    } finally {
+      setCargandoPlano(false);
     }
   };
+
+  // ── Benchmark ──────────────────────────────────────────────
+  const handleBenchmark = async () => {
+    setCargandoBenchmark(true);
+    setBenchmark(null);
+    addLog(`Ejecutando benchmark con ${distritos} distritos...`);
+    try {
+      const res = await fetch(`${API}/benchmark?distritos=${distritos}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setBenchmark(data);
+      addLog(`✅ Benchmark: ${data.resultado.reduccionPorcentaje} reducción, factor ${data.resultado.factorCompresion}`, "success");
+    } catch (err) {
+      addLog(`❌ ${err.message}`, "error");
+    } finally {
+      setCargandoBenchmark(false);
+    }
+  };
+
+  const ambos = resultadoGzip && resultadoPlano;
+  const ahorroBytes = ambos ? resultadoPlano.bytes - resultadoGzip.bytes : null;
+  const ahorroMs    = ambos ? resultadoPlano.ms - resultadoGzip.ms : null;
+  const reduccionPct = ambos
+    ? (((resultadoPlano.bytes - resultadoGzip.bytes) / resultadoPlano.bytes) * 100).toFixed(1)
+    : null;
 
   return (
     <div className="app">
+
       {/* Header */}
       <header className="header">
-        <div className="header-inner">
-          <div className="logo">
-            <span className="logo-icon">⚡</span>
-            <div>
-              <h1>GZip Bucket Demo</h1>
-              <p>Compresión JSON — React + Vite + Node/Express</p>
-            </div>
+        <div className="header__logo">
+          <span className="header__icon">🗳</span>
+          <div>
+            <h1>Elecciones 2025 — Gzip Demo</h1>
+            <p>Comparación real: JSON plano vs comprimido</p>
           </div>
-          <div className="header-tags">
-            <span className="tag">GCS Simulado</span>
-            <span className="tag tag-green">Gzip activo</span>
-          </div>
+        </div>
+        <div className="header__slider">
+          <label>Distritos: <strong>{distritos}</strong></label>
+          <input type="range" min={10} max={500} value={distritos}
+            onChange={(e) => setDistritos(+e.target.value)} />
         </div>
       </header>
 
       <main className="main">
-        {/* Left panel */}
-        <section className="panel">
-          <div className="tabs">
-            <button className={`tab ${tab === "upload" ? "active" : ""}`} onClick={() => setTab("upload")}>
-              ⬆ Upload
-            </button>
-            <button
-              className={`tab ${tab === "bucket" ? "active" : ""}`}
-              onClick={() => {
-                setTab("bucket");
-                loadBucket();
-              }}
-            >
-              📦 Bucket
-            </button>
-          </div>
 
-          {/* Upload Tab */}
-          {tab === "upload" && (
-            <div className="tab-content">
-              <div className="form-group">
-                <label>Nombre del archivo</label>
-                <input
-                  className="input"
-                  value={filename}
-                  onChange={(e) => setFilename(e.target.value)}
-                  placeholder="nombre.json"
+        {/* ── Col izquierda ──────────────────────────────── */}
+        <div className="col">
+
+          {/* Paso 1 */}
+          <div className="card">
+            <div className="step-badge">Paso 1 — Guardar en GCS</div>
+            <h2>Comprimir y subir</h2>
+            <p className="desc">
+              El backend recibe los datos de elecciones y los guarda en GCS
+              comprimidos con <code>gzip</code>. Vos solo pasás el objeto JS.
+            </p>
+            <button className="btn btn--primary" onClick={handleGuardar} disabled={guardando}>
+              {guardando ? "⏳ Comprimiendo y subiendo..." : "⬆ Guardar en GCS"}
+            </button>
+
+            {statsGuardado && (
+              <>
+                <CompareBar
+                  labelA="JSON plano"    valueA={statsGuardado.original}
+                  labelB="Guardado gzip" valueB={statsGuardado.comprimido}
                 />
-              </div>
-
-              <div className="form-group">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={useCustom}
-                    onChange={(e) => setUseCustom(e.target.checked)}
-                    style={{ marginRight: 6 }}
-                  />
-                  Usar JSON personalizado
-                </label>
-              </div>
-
-              {useCustom ? (
-                <div className="form-group">
-                  <label>JSON personalizado</label>
-                  <textarea
-                    className="input textarea"
-                    value={customJson}
-                    onChange={(e) => setCustomJson(e.target.value)}
-                    placeholder='{"key": "value"}'
-                  />
+                <div className="badge-row">
+                  <span className="badge badge--green">−{statsGuardado.reduccion} de tamaño</span>
+                  <span className="badge badge--gray">✓ listo para consumir</span>
                 </div>
-              ) : (
-                <div className="form-group">
-                  <label>Tamaño del JSON de prueba</label>
-                  <div className="size-selector">
-                    {["small", "medium", "large"].map((s) => (
-                      <button
-                        key={s}
-                        className={`size-btn ${jsonSize === s ? "active" : ""}`}
-                        onClick={() => setJsonSize(s)}
-                      >
-                        {s === "small" ? "🟢 Small (~50KB)" : s === "medium" ? "🟡 Medium (~500KB)" : "🔴 Large (~2MB)"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              </>
+            )}
+          </div>
 
-              <button className="btn btn-primary" onClick={handleUpload} disabled={uploadLoading}>
-                {uploadLoading ? "⏳ Comprimiendo y subiendo..." : "⬆ Subir al Bucket"}
+          {/* Paso 2 */}
+          <div className="card">
+            <div className="step-badge step-badge--blue">Paso 2 — Cargar y comparar</div>
+            <h2>Diferencia en carga real</h2>
+            <p className="desc">
+              Cargá el mismo archivo de las dos formas para ver la diferencia 
+              real de tamaño y tiempo de respuesta.
+            </p>
+
+            <div className="btn-pair">
+              <button className="btn btn--gzip" onClick={handleCargarGzip}
+                disabled={cargandoGzip || !statsGuardado}>
+                {cargandoGzip ? "⏳ Cargando..." : "⬇ Cargar con Gzip"}
               </button>
+              <button className="btn btn--plain" onClick={handleCargarPlano}
+                disabled={cargandoPlano || !statsGuardado}>
+                {cargandoPlano ? "⏳ Cargando..." : "⬇ Cargar JSON plano"}
+              </button>
+            </div>
 
-              {uploadError && <div className="alert alert-error">❌ {uploadError}</div>}
+            {!statsGuardado && (
+              <p className="hint">⬆ Primero guardá los datos en el Paso 1</p>
+            )}
 
-              {uploadResult && (
-                <div className="result-box">
-                  <h3>✅ Subido exitosamente</h3>
-                  <div className="stats-grid">
-                    <StatCard label="Tamaño original" value={uploadResult.stats.originalFormatted} />
-                    <StatCard label="Tamaño comprimido" value={uploadResult.stats.compressedFormatted} />
-                    <StatCard label="Reducción" value={uploadResult.stats.reduction} accent />
+            {/* Tabla comparativa */}
+            {(resultadoGzip || resultadoPlano) && (
+              <div className="compare-table">
+                <div className="compare-table__header">
+                  <span></span>
+                  <span>Bytes recibidos</span>
+                  <span>Tiempo total</span>
+                </div>
+                <div className="compare-table__row">
+                  <span><span className="dot dot--green" /> Gzip</span>
+                  <span className="val--green">
+                    {resultadoGzip ? formatBytes(resultadoGzip.bytes) : <span className="pending">pendiente</span>}
+                  </span>
+                  <span className="val--green">
+                    {resultadoGzip ? `${resultadoGzip.ms}ms` : <span className="pending">pendiente</span>}
+                  </span>
+                </div>
+                <div className="compare-table__row">
+                  <span><span className="dot dot--red" /> JSON plano</span>
+                  <span className="val--red">
+                    {resultadoPlano ? formatBytes(resultadoPlano.bytes) : <span className="pending">pendiente</span>}
+                  </span>
+                  <span className="val--red">
+                    {resultadoPlano ? `${resultadoPlano.ms}ms` : <span className="pending">pendiente</span>}
+                  </span>
+                </div>
+                {ambos && (
+                  <div className="compare-table__diff">
+                    <span>✅ Gzip ahorra</span>
+                    <span className="val--green">{formatBytes(ahorroBytes)} menos</span>
+                    <span className="val--green">
+                      {ahorroMs > 0 ? `${ahorroMs}ms más rápido` : "tiempo similar"}
+                    </span>
                   </div>
-                  <div className="how-it-works">
-                    <strong>¿Cómo funciona?</strong>
-                    <ol>
-                      <li>El backend recibe el JSON y lo comprime con <code>zlib.gzip()</code></li>
-                      <li>Lo guarda en memoria (simula GCS) con <code>Content-Encoding: gzip</code></li>
-                      <li>Al descargar, el browser recibe el binario comprimido y lo descomprime automáticamente</li>
-                    </ol>
+                )}
+              </div>
+            )}
+
+            {/* Barras visuales de comparación */}
+            {ambos && (
+              <div className="comparison-visual">
+                <p className="comparison-visual__title">📦 Tamaño transferido</p>
+                <CompareBar
+                  labelA="JSON plano" valueA={resultadoPlano.bytes}
+                  labelB="Gzip"       valueB={resultadoGzip.bytes}
+                />
+                <p className="comparison-visual__title" style={{ marginTop: "1rem" }}>⏱ Tiempo de respuesta</p>
+                <TimingBar
+                  labelA="JSON plano" msA={resultadoPlano.ms}
+                  labelB="Gzip"       msB={resultadoGzip.ms}
+                />
+                <div className="winner-box">
+                  <span className="winner-box__icon">🏆</span>
+                  <p>
+                    Gzip transfirió <strong>{reduccionPct}% menos datos</strong> 
+                    {ahorroMs > 0 && <> y fue <strong>{ahorroMs}ms más rápido</strong></>}.
+                    Ahorraste <strong>{formatBytes(ahorroBytes)}</strong> por request.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Col derecha ────────────────────────────────── */}
+        <div className="col">
+
+          {/* Benchmark */}
+          <div className="card">
+            <div className="step-badge step-badge--dark">Benchmark del servidor</div>
+            <h2>Análisis de compresión</h2>
+            <p className="desc">
+              Mide cuánto reduce el JSON y cuánto tarda en comprimir/descomprimir 
+              en el servidor. Usá el slider de arriba para cambiar la cantidad de distritos.
+            </p>
+            <button className="btn btn--primary" onClick={handleBenchmark} disabled={cargandoBenchmark}>
+              {cargandoBenchmark ? "⏳ Analizando..." : "🔬 Ejecutar benchmark"}
+            </button>
+
+            {benchmark && (
+              <div className="benchmark-results">
+                <CompareBar
+                  labelA="JSON plano" valueA={benchmark.comparacion.json.bytes}
+                  labelB="Gzip"       valueB={benchmark.comparacion.gzip.bytes}
+                />
+
+                <div className="pills-grid">
+                  <div className="pill pill--green">
+                    <span className="pill__label">Reducción</span>
+                    <span className="pill__value">{benchmark.resultado.reduccionPorcentaje}</span>
+                  </div>
+                  <div className="pill pill--blue">
+                    <span className="pill__label">Factor</span>
+                    <span className="pill__value">{benchmark.resultado.factorCompresion}</span>
+                  </div>
+                  <div className="pill">
+                    <span className="pill__label">Tiempo comprimir</span>
+                    <span className="pill__value">{benchmark.resultado.tiempoComprimirMs}</span>
+                  </div>
+                  <div className="pill">
+                    <span className="pill__label">Tiempo descomprimir</span>
+                    <span className="pill__value">{benchmark.resultado.tiempoDescomprimirMs}</span>
+                  </div>
+                  <div className="pill pill--green">
+                    <span className="pill__label">Bytes ahorrados</span>
+                    <span className="pill__value">{benchmark.resultado.reduccionFormateada}</span>
+                  </div>
+                  <div className="pill">
+                    <span className="pill__label">Distritos</span>
+                    <span className="pill__value">{benchmark.configuracion.distritos}</span>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
 
-          {/* Bucket Tab */}
-          {tab === "bucket" && (
-            <div className="tab-content">
-              <div className="bucket-header">
-                <span className="bucket-count">{bucketFiles.length} archivo(s)</span>
-                <button className="btn btn-sm" onClick={loadBucket} disabled={bucketLoading}>
-                  {bucketLoading ? "⏳" : "🔄 Actualizar"}
-                </button>
+                <div className="conclusion-box">
+                  <p>{benchmark.resultado.conclusion}</p>
+                </div>
               </div>
-
-              {bucketFiles.length === 0 ? (
-                <div className="empty-bucket">
-                  <span>📭</span>
-                  <p>El bucket está vacío. Sube un archivo primero.</p>
-                </div>
-              ) : (
-                bucketFiles.map((f) => (
-                  <BucketFile
-                    key={f.filename}
-                    file={f}
-                    onDownload={handleDownload}
-                    onDelete={handleDelete}
-                    downloading={downloadingFile}
-                  />
-                ))
-              )}
-
-              {downloadedData && (
-                <div className="result-box">
-                  <h3>⬇ Datos descargados — {downloadTime}ms</h3>
-                  <p className="preview-label">Preview del JSON recibido:</p>
-                  <pre className="json-preview">
-                    {JSON.stringify(downloadedData, null, 2).slice(0, 600)}...
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        {/* Right panel - Log */}
-        <section className="panel panel-log">
-          <div className="log-header">
-            <h2>📋 Activity Log</h2>
-            <button className="btn btn-sm" onClick={() => setLog([])}>Limpiar</button>
+            )}
           </div>
 
-          <div className="log-entries">
-            {log.length === 0 && <p className="log-empty">Sin actividad aún...</p>}
-            {log.map((entry, i) => (
-              <div key={i} className={`log-entry log-${entry.type}`}>
-                <span className="log-time">{entry.time}</span>
-                <span className="log-msg">{entry.msg}</span>
-              </div>
-            ))}
+          {/* Log */}
+          <div className="card card--log">
+            <div className="log-header">
+              <span className="log-title">📋 Activity log</span>
+              <button className="btn-clear" onClick={() => setLog([])}>limpiar</button>
+            </div>
+            {log.length === 0
+              ? <p className="log-empty">Sin actividad...</p>
+              : log.map((e, i) => (
+                <div key={i} className={`log-entry log-entry--${e.tipo}`}>
+                  <span className="log-t">{e.t}</span>
+                  <span>{e.msg}</span>
+                </div>
+              ))
+            }
           </div>
 
-          <div className="explainer">
-            <h3>🔬 Lo que ocurre en el wire</h3>
-            <div className="flow">
-              <div className="flow-step">
-                <span className="flow-icon">📄</span>
-                <div>
-                  <strong>JSON original</strong>
-                  <p>Texto plano, caracteres repetidos (coordenadas)</p>
-                </div>
-              </div>
-              <div className="flow-arrow">↓ zlib.gzip()</div>
-              <div className="flow-step">
-                <span className="flow-icon">🗜</span>
-                <div>
-                  <strong>Buffer binario</strong>
-                  <p>70-90% más liviano, guardado en GCS</p>
-                </div>
-              </div>
-              <div className="flow-arrow">↓ Content-Encoding: gzip</div>
-              <div className="flow-step">
-                <span className="flow-icon">🌐</span>
-                <div>
-                  <strong>Browser recibe</strong>
-                  <p>Descarga el binario comprimido y lo descomprime automáticamente</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
+        </div>
       </main>
     </div>
   );

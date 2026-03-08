@@ -190,6 +190,68 @@ app.get("/api/elecciones/:archivo", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// ENDPOINT 3: Comparación gzip vs JSON plano — mismo dataset
+// GET /api/benchmark?distritos=200
+// ─────────────────────────────────────────────────────────────
+app.get("/api/benchmark", async (req, res) => {
+  try {
+    const distritos = parseInt(req.query.distritos) || 100;
+
+    // Generamos los mismos datos una sola vez
+    const datos = generarResultadosElecciones(distritos);
+    const jsonString = JSON.stringify(datos);
+    const bufferPlano = Buffer.from(jsonString, "utf-8");
+
+    // Medimos compresión
+    const t0Gzip = performance.now();
+    const bufferGzip = await gzip(bufferPlano);
+    const tiempoComprimir = (performance.now() - t0Gzip).toFixed(2);
+
+    // Medimos descompresión
+    const t0Gunzip = performance.now();
+    await gunzip(bufferGzip);
+    const tiempoDescomprimir = (performance.now() - t0Gunzip).toFixed(2);
+
+    const tamanioPlano      = bufferPlano.byteLength;
+    const tamanioGzip       = bufferGzip.byteLength;
+    const reduccion         = (((tamanioPlano - tamanioGzip) / tamanioPlano) * 100).toFixed(1);
+    const factorCompresion  = (tamanioPlano / tamanioGzip).toFixed(2);
+
+    res.json({
+      configuracion: {
+        distritos,
+        partidos: 4,
+        coordenadasPorDistrito: 10,
+      },
+      comparacion: {
+        json: {
+          descripcion: "JSON plano sin comprimir",
+          bytes: tamanioPlano,
+          formateado: formatBytes(tamanioPlano),
+        },
+        gzip: {
+          descripcion: "JSON comprimido con gzip",
+          bytes: tamanioGzip,
+          formateado: formatBytes(tamanioGzip),
+        },
+      },
+      resultado: {
+        reduccionBytes: tamanioPlano - tamanioGzip,
+        reduccionFormateada: formatBytes(tamanioPlano - tamanioGzip),
+        reduccionPorcentaje: `${reduccion}%`,
+        factorCompresion: `${factorCompresion}x`,
+        tiempoComprimirMs: `${tiempoComprimir}ms`,
+        tiempoDescomprimirMs: `${tiempoDescomprimir}ms`,
+        conclusion: `Con ${distritos} distritos, gzip reduce el payload de ${formatBytes(tamanioPlano)} a ${formatBytes(tamanioGzip)} (${reduccion}% menos). El browser descomprime en ~${tiempoDescomprimir}ms.`,
+      },
+    });
+  } catch (err) {
+    console.error("[BENCHMARK ERROR]", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
   const sizes = ["B", "KB", "MB"];
