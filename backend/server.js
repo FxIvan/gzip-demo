@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import zlib from "zlib";
 import { promisify } from "util";
+import { Storage } from "@google-cloud/storage";
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -11,10 +12,12 @@ app.use(cors());
 app.use(express.json());
 
 // ─────────────────────────────────────────────────────────────
-// SIMULACIÓN DEL BUCKET GCS (en memoria)
-// En producción esto sería: @google-cloud/storage → bucket.file().save()
+// GCS REAL
+// El SDK usa las credenciales del servidor automáticamente
+// (GOOGLE_APPLICATION_CREDENTIALS o ADC en GCP)
 // ─────────────────────────────────────────────────────────────
-const gcsBucket = new Map();
+const storage = new Storage({ projectId: process.env.GCS_PROJECT_ID });
+const bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
 
 async function subirABucket(nombreArchivo, objetoJS) {
   // 1. Convertís tu objeto JS a string JSON
@@ -24,17 +27,11 @@ async function subirABucket(nombreArchivo, objetoJS) {
   const bufferComprimido = await gzip(Buffer.from(jsonString, "utf-8"));
 
   // 3. Guardás el buffer en GCS con los headers correctos
-  // En GCS real sería:
-  //   await bucket.file(nombreArchivo).save(bufferComprimido, {
-  //     metadata: { contentEncoding: "gzip", contentType: "application/json" }
-  //   });
-  gcsBucket.set(nombreArchivo, {
-    buffer: bufferComprimido,
-    contentEncoding: "gzip",
-    contentType: "application/json",
-    guardadoEn: new Date().toISOString(),
-    tamañoOriginal: Buffer.byteLength(jsonString),
-    tamañoComprimido: bufferComprimido.byteLength,
+  await bucket.file(nombreArchivo).save(bufferComprimido, {
+    metadata: {
+      contentEncoding: "gzip",
+      contentType: "application/json",
+    },
   });
 
   return {
@@ -44,11 +41,19 @@ async function subirABucket(nombreArchivo, objetoJS) {
 }
 
 async function leerDeBucket(nombreArchivo) {
-  // En GCS real sería:
-  //   const [buffer] = await bucket.file(nombreArchivo).download();
-  const archivo = gcsBucket.get(nombreArchivo);
-  if (!archivo) return null;
-  return archivo;
+  const archivo = bucket.file(nombreArchivo);
+
+  // decompress: false → GCS nos da el buffer comprimido tal cual está guardado
+  // Sin esto, GCS lo descomprime automáticamente y nosotros le mandamos
+  // Content-Encoding: gzip al cliente sobre algo que ya viene descomprimido
+  const [buffer] = await archivo.download({ decompress: false });
+  const [metadata] = await archivo.getMetadata();
+
+  return {
+    buffer,
+    tamañoComprimido: buffer.byteLength,
+    tamañoOriginal: parseInt(metadata?.size) || null,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -77,11 +82,9 @@ function generarResultadosElecciones(cantidadDistritos = 100) {
       mesasTotales: 10000,
     },
     distritos: Array.from({ length: cantidadDistritos }, (_, i) => {
-      // Generamos porcentajes que sumen ~100
       const votos = partidos.map(() => Math.random());
       const total = votos.reduce((a, b) => a + b, 0);
       const porcentajes = votos.map((v) => +((v / total) * 100).toFixed(2));
-
       const ganadorIdx = porcentajes.indexOf(Math.max(...porcentajes));
 
       return {
@@ -90,7 +93,6 @@ function generarResultadosElecciones(cantidadDistritos = 100) {
         provincia: provincias[i % provincias.length],
         geometry: {
           type: "Polygon",
-          // Coordenadas con muchos decimales (como el GeoJSON real)
           coordinates: [
             Array.from({ length: 10 }, () => [
               +(Math.random() * 20 - 70).toFixed(14),
@@ -113,8 +115,7 @@ function generarResultadosElecciones(cantidadDistritos = 100) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ENDPOINT 1: Simula recibir datos nuevos y guardarlos en GCS
-// En producción esto lo llamaría un cron job, un webhook, etc.
+// ENDPOINT 1: Genera datos y los guarda en GCS comprimidos
 // ─────────────────────────────────────────────────────────────
 app.post("/api/elecciones/guardar", async (req, res) => {
   try {
@@ -122,14 +123,10 @@ app.post("/api/elecciones/guardar", async (req, res) => {
 
     console.log(`\n[GUARDAR] Generando resultados para ${distritos} distritos...`);
 
-    // Acá normalmente tendrías: const datos = await obtenerDatosDeDB();
-    // Nosotros lo simulamos:
+    // En producción: const datos = await obtenerDatosDeDB();
     const datos = generarResultadosElecciones(distritos);
 
     const nombreArchivo = `resultados-2025.json`;
-
-    // Guardamos en GCS comprimido (no necesitás hacer nada especial, 
-    // solo pasarle el objeto JS a la función)
     const stats = await subirABucket(nombreArchivo, datos);
 
     const reduccion = (((stats.tamañoOriginal - stats.tamañoComprimido) / stats.tamañoOriginal) * 100).toFixed(1);
@@ -139,6 +136,7 @@ app.post("/api/elecciones/guardar", async (req, res) => {
     res.json({
       ok: true,
       archivo: nombreArchivo,
+      bucket: process.env.GCS_BUCKET_NAME,
       stats: {
         original: stats.tamañoOriginal,
         comprimido: stats.tamañoComprimido,
@@ -154,42 +152,39 @@ app.post("/api/elecciones/guardar", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// ENDPOINT 2: El front consume este endpoint para obtener los datos
+// ENDPOINT 2: Sirve el archivo desde GCS con gzip
 // ─────────────────────────────────────────────────────────────
 app.get("/api/elecciones/:archivo", async (req, res) => {
   try {
     const archivo = await leerDeBucket(req.params.archivo);
 
-    if (!archivo) {
-      return res.status(404).json({ error: "Archivo no encontrado en el bucket" });
-    }
-
     const clienteAceptaGzip = req.headers["accept-encoding"]?.includes("gzip");
 
     if (clienteAceptaGzip) {
-      // Cliente soporta gzip (browser, Postman con decompress desactivado)
-      // Usamos res.end() para que Express NO toque el buffer
+      // Browser / cliente con gzip: enviamos el buffer comprimido directo
+      // El cliente lo descomprime automáticamente
       res.writeHead(200, {
         "Content-Type": "application/json",
         "Content-Encoding": "gzip",
-        "X-Original-Size": archivo.tamañoOriginal,
         "X-Compressed-Size": archivo.tamañoComprimido,
       });
       res.end(archivo.buffer);
       console.log(`[SERVIR] gzip → ${formatBytes(archivo.tamañoComprimido)}`);
     } else {
-      // Postman con "Automatically decode response" o cliente sin gzip
-      // Descomprimimos en el servidor y enviamos JSON plano
+      // Postman sin gzip o cliente legacy: descomprimimos en el servidor
       const descomprimido = await gunzip(archivo.buffer);
       res.set({
         "Content-Type": "application/json",
-        "X-Original-Size": archivo.tamañoOriginal,
         "X-Compressed-Size": archivo.tamañoComprimido,
       });
       res.end(descomprimido);
-      console.log(`[SERVIR] json plano → ${formatBytes(archivo.tamañoOriginal)}`);
+      console.log(`[SERVIR] json plano → ${formatBytes(descomprimido.byteLength)}`);
     }
   } catch (err) {
+    // Archivo no encontrado en GCS
+    if (err.code === 404) {
+      return res.status(404).json({ error: "Archivo no encontrado en el bucket" });
+    }
     console.error("[SERVIR ERROR]", err);
     res.status(500).json({ error: err.message });
   }
@@ -204,7 +199,6 @@ function formatBytes(bytes) {
 
 app.listen(3001, () => {
   console.log("🚀 Backend en http://localhost:3001");
-  console.log("\nFlujo:");
-  console.log("  POST /api/elecciones/guardar  → genera datos y los sube comprimidos al bucket");
-  console.log("  GET  /api/elecciones/:archivo → sirve el archivo con Content-Encoding: gzip\n");
+  console.log(`📦 Bucket: ${process.env.GCS_BUCKET_NAME}`);
+  console.log(`🔑 Proyecto: ${process.env.GCS_PROJECT_ID}\n`);
 });
