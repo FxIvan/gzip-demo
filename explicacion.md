@@ -183,6 +183,78 @@ GCS_BUCKET_NAME=mi-bucket-elecciones
 
 ---
 
+## ⚛️ Cómo consumir gzip desde el frontend (React)
+
+La parte más importante: **el frontend no cambia nada**. El browser maneja la descompresión solo.
+
+```jsx
+// ✅ Así de simple — fetch normal, sin ninguna librería extra
+function useResultadosElecciones(archivo) {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`http://localhost:3001/api/elecciones/${archivo}`)
+      // El browser ve el header "Content-Encoding: gzip"
+      // y descomprime automáticamente antes de entregarte la respuesta
+      .then((res) => {
+        if (!res.ok) throw new Error("Error al cargar");
+        return res.json(); // ← ya viene descomprimido, no hay que hacer nada especial
+      })
+      .then(setData)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [archivo]);
+
+  return { data, loading, error };
+}
+
+// Uso en un componente
+export default function MapaElectoral() {
+  const { data, loading, error } = useResultadosElecciones("resultados-2025.json");
+
+  if (loading) return <p>Cargando...</p>;
+  if (error)   return <p>Error: {error}</p>;
+  if (!data)   return null;
+
+  return (
+    <div>
+      <h1>{data.eleccion.tipo} {data.eleccion.año}</h1>
+      {data.distritos.map((d) => (
+        <div key={d.id}>{d.nombre} — ganó: {d.resultados.ganador}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+### ¿Y si uso axios?
+
+```js
+// axios también lo maneja automáticamente
+import axios from "axios";
+
+const { data } = await axios.get("/api/elecciones/resultados-2025.json");
+// data ya es el objeto JS descomprimido
+```
+
+### ¿Y si el archivo está directo en GCS (sin backend)?
+
+```js
+// Si el archivo está en GCS con contentEncoding: gzip,
+// podés consumirlo directo desde el frontend también
+const res  = await fetch("https://storage.googleapis.com/mi-bucket/resultados-2025.json");
+const data = await res.json(); // el browser descomprime solo igual
+```
+
+> **Resumen:** no importa si el gzip lo sirve tu Express, GCS directamente, o un CDN.
+> Mientras el servidor mande `Content-Encoding: gzip`, el browser descomprime solo
+> y `res.json()` te devuelve el objeto JS limpio. No necesitás ninguna librería.
+
+---
+
 ## 🏗 Aplicar en GCS real
 
 ```js
